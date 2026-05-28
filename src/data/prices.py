@@ -57,3 +57,20 @@ def get_recent_bars(
     else:
         df["volume"] = 0  # forex doesn't have real volume
     return df[["open", "high", "low", "close", "volume"]].dropna()
+
+def get_current_price(symbol: str) -> Optional[float]:
+    """Fetch the latest price for a symbol. Returns None on failure."""
+    url = "https://api.twelvedata.com/price"
+    params = {"symbol": symbol, "apikey": settings.twelvedata_api_key}
+    try:
+        r = httpx.get(url, params=params, timeout=10.0)
+        r.raise_for_status()
+        data = r.json()
+    except httpx.HTTPError as e:
+        logger.exception("Price fetch failed for %s: %s", symbol, e)
+        return None
+
+    if "price" not in data:
+        logger.warning("No price for %s: %s", symbol, data)
+        return None
+    return float(data["price"])

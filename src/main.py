@@ -8,6 +8,9 @@ from src.config import settings
 from src.data.prices import get_recent_bars
 from src.analysis.technicals import generate_signal, TechnicalSignal
 from src.db.journal import record_signal, get_recent_signal
+from src.analysis.market import build_snapshot
+from src.analysis.coach import coach_report
+from src.analysis.risk import stop_distance_pips
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,29 +18,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scanner")
 
-SYMBOLS = ["EUR/USD", "GBP/USD", "BTC/USD"]
-SCAN_INTERVAL_SECONDS = 300          # 5 minutes
-PER_SYMBOL_DELAY_SECONDS = 8         # stay under Twelve Data's 8 req/min free tier
-
+# BTC/USD removed. Safely under the API rate limit.
+SYMBOLS = ["XAU/USD", "EUR/USD", "GBP/USD"]
+SCAN_INTERVAL_SECONDS = 300          
+PER_SYMBOL_DELAY_SECONDS = 8         
 
 
 def format_signal(s: TechnicalSignal) -> str:
     arrow = "🟢" if s.side == "BUY" else "🔴"
+    
+    # Combine the list of checks into a clean, multi-line string
+    checklist_str = "\n".join(s.checklist)
+    
     return (
-        f"{arrow} <b>{s.side} {s.symbol}</b>\n\n"
+        f"{arrow} <b>{s.side} {s.symbol}</b>\n"
+        f"Strength: {s.score}/{s.total_checks} ⚡\n\n"
         f"Entry: <code>{s.entry:.5f}</code>\n"
         f"Stop Loss: <code>{s.stop_loss:.5f}</code>\n"
         f"Take Profit: <code>{s.take_profit:.5f}</code>\n"
         f"RR: <b>{s.rr}:1</b>\n\n"
-        f"<i>{s.reason}</i>\n\n"
-        f"⚠️ Educational only — not financial advice. Manage your own risk."
+        f"<b>📊 Confluences:</b>\n"
+        f"{checklist_str}\n\n"
+        f"<i>⚠️ Setup briefed for manual execution. Please review chart.</i>"
     )
 
 
 async def scan_once(bot: Bot) -> None:
     for symbol in SYMBOLS:
         try:
-            df = get_recent_bars(symbol, interval="5min", outputsize=100)
+            df = get_recent_bars(symbol, interval="5min", outputsize=250)
         except Exception:
             logger.exception("Fetch failed for %s", symbol)
             await asyncio.sleep(PER_SYMBOL_DELAY_SECONDS)
@@ -54,7 +63,6 @@ async def scan_once(bot: Bot) -> None:
             await asyncio.sleep(PER_SYMBOL_DELAY_SECONDS)
             continue
 
-        # DB-backed dedup: skip if we already fired for this symbol in the last hour
         recent = await get_recent_signal(symbol, within_minutes=60)
         if recent is not None:
             logger.info(
@@ -64,29 +72,51 @@ async def scan_once(bot: Bot) -> None:
             await asyncio.sleep(PER_SYMBOL_DELAY_SECONDS)
             continue
 
-        # Persist FIRST. If the DB write fails, we don't Telegram a phantom.
         try:
             signal_id = await record_signal(
                 symbol=signal.symbol, side=signal.side,
                 entry=signal.entry, stop_loss=signal.stop_loss,
                 take_profit=signal.take_profit, rr=signal.rr,
                 reason=signal.reason,
-                meta={"strategy": "ema_crossover_v1"},
+                meta={"strategy": "ema_crossover_v2", "score": signal.score},
             )
         except Exception:
             logger.exception("DB write failed for %s — not sending Telegram", symbol)
             await asyncio.sleep(PER_SYMBOL_DELAY_SECONDS)
             continue
 
-        # Then notify
+        # ─────────────────────────────────────────────────────────────
+        # COACH BLOCK — replaces the old plain send_message try/except
+        # ─────────────────────────────────────────────────────────────
+        snapshot = build_snapshot(symbol, df, timeframe="5min")
+        sl_pips = stop_distance_pips(symbol, float(signal.entry), float(signal.stop_loss))
+        setup = {
+            "side": signal.side,
+            "entry": float(signal.entry),
+            "stop_loss": float(signal.stop_loss),
+            "take_profit": float(signal.take_profit),
+            "rr": float(signal.rr),
+            "stop_distance_pips": sl_pips,
+            "confluences_passed": signal.score,
+        }
+        account = {"size_gbp": 50, "risk_per_trade_pct": 2, "max_leverage": 10}
+
+        report = await coach_report(
+            snapshot.to_dict() if snapshot else {}, setup, account
+        )
+
+        message = report.strip() if report else format_signal(signal)
+        message += f"\n\n<i>Signal #{signal_id}</i>"
+
         try:
             await bot.send_message(
                 chat_id=settings.telegram_owner_chat_id,
-                text=format_signal(signal) + f"\n\n<i>Signal #{signal_id}</i>",
+                text=message[:4000],
             )
-            logger.info("SIGNAL #%s sent to Telegram", signal_id)
+            logger.info("SIGNAL #%s sent (coach=%s)", signal_id, bool(report))
         except Exception:
             logger.exception("Telegram send failed for signal id=%s", signal_id)
+        # ─────────────────────────────────────────────────────────────
 
         await asyncio.sleep(PER_SYMBOL_DELAY_SECONDS)
 
