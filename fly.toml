@@ -1,0 +1,11 @@
+app = 'signal-bot-plucky-harborbird-9019'
+primary_region = 'lhr'
+
+[build]
+
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
