@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 import pandas as pd
-import pandas_ta as ta
+import pandas_ta_classic as ta
 
 logger = logging.getLogger(__name__)
 
