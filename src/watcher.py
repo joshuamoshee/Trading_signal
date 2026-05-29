@@ -13,18 +13,14 @@ EXPIRY_HOURS = 24                 # auto-expire signals older than this
 PER_SYMBOL_DELAY_SECONDS = 8      # respect Twelve Data rate limit
 
 
-def _evaluate(side: str, price: Decimal, sl: Decimal, tp: Decimal) -> str | None:
-    """Return 'WON', 'LOST', or None (still open) for the current price."""
+# Instead of get_current_price, fetch the recent bar and check extremes:
+def _evaluate_candle(side: str, high: Decimal, low: Decimal, sl: Decimal, tp: Decimal) -> str | None:
     if side == "BUY":
-        if price >= tp:
-            return "WON"
-        if price <= sl:
-            return "LOST"
+        if high >= tp: return "WON"
+        if low <= sl: return "LOST"
     else:  # SELL
-        if price <= tp:
-            return "WON"
-        if price >= sl:
-            return "LOST"
+        if low <= tp: return "WON"
+        if high >= sl: return "LOST"
     return None
 
 

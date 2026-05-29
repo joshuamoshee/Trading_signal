@@ -1,15 +1,18 @@
 import json
 import logging
-from anthropic import AsyncAnthropic
+import asyncio
+from google import genai
+from google.genai import types
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+_client = genai.Client(api_key=settings.gemini_api_key)
 
-# Current model strings as of 2026: claude-sonnet-4-6 (balanced),
-# claude-haiku-4-5-20251001 (cheaper/faster). Verify at docs.claude.com.
-MODEL = "claude-sonnet-4-6"
+# gemini-2.5-flash is the right balance of cost and quality for this.
+# Upgrade to gemini-2.5-pro if you want stronger reasoning; downgrade to
+# a lighter flash variant if you ever hit the free tier.
+MODEL = "gemini-2.5-flash"
 
 COACH_SYSTEM = """You are an expert professional forex and gold (XAU/USD) trader and \
 technical analyst with 15+ years of experience. You think like a prop firm trader — \
@@ -48,13 +51,18 @@ async def coach_report(snapshot: dict, setup: dict, account: dict) -> str:
         "Write the 8-section analysis now."
     )
     try:
-        resp = await client.messages.create(
+        # The SDK call is sync; run in an executor so we don't block the event loop.
+        resp = await asyncio.to_thread(
+            _client.models.generate_content,
             model=MODEL,
-            max_tokens=1500,
-            system=COACH_SYSTEM,
-            messages=[{"role": "user", "content": user_content}],
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=COACH_SYSTEM,
+                max_output_tokens=1500,
+                temperature=0.4,
+            ),
         )
-        return "".join(b.text for b in resp.content if b.type == "text")
+        return resp.text or ""
     except Exception:
-        logger.exception("Coach LLM call failed")
-        return ""  # fall back to the plain signal message  
+        logger.exception("Gemini coach call failed")
+        return ""
